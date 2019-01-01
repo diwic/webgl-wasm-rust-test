@@ -1,0 +1,31 @@
+[package]
+name = "webgl-wasm"
+version = "0.1.0"
+authors = ["David Henningsson <diwic@ubuntu.com>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2.29"
+js-sys = "0.3.6"
+nalgebra = "0.16"
+
+[dependencies.web-sys]
+version = "0.3.4"
+features = [
+  'console',
+  'CssStyleDeclaration',
+  'Document',
+  'Element',
+  'HtmlElement',
+  'HtmlCanvasElement',
+  'Node',
+  'WebGlBuffer',
+  'WebGlProgram',
+  'WebGlRenderingContext',
+  'WebGlShader',
+  'WebGlUniformLocation',
+  'Window',
+]
