@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::collections::HashSet;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{console, WebGlProgram, WebGlRenderingContext, WebGlShader, WebGlBuffer, WebGlUniformLocation};
@@ -163,20 +164,12 @@ impl SquareProgram {
         Ok(SquareProgram { prog, vertex_position, vertex_color, model_view_matrix, projection_matrix, position_buffer })
     }
 
-    pub fn run(&self, m: &Main, color: &[f32; 4]) {
+    pub fn run(&self, m: &Main, color: &[f32; 4], proj: &Matrix4<f32>, model: &Matrix4<f32>) {
         let gl = &m.context;
         gl.use_program(Some(&self.prog));
-        let mut proj_matrix = Matrix4::new_perspective(1200.0 / 700.0, 3.14 / 2.0, 0.1, 10000.0);
-        let mut view_matrix = Matrix4::look_at_rh(&Point3::new(0.0, 0.0, -5.0), &Point3::new(0.0, 0.0, 0.0), &Vector3::y());
-        proj_matrix = proj_matrix * view_matrix;
 
-        let mut model_matrix = Matrix4::new_scaling(1.0);
-        let rot = Matrix4::from_axis_angle(&Unit::new_normalize(Vector3::y()), (m.framecount as f32) / 100.0);
-        model_matrix = model_matrix * rot;
- 
-        // let mut half_matrix: Vec<_> = unit_matrix.iter().map(|&x| x * 0.5).collect();
-        gl.uniform_matrix4fv_with_f32_array(Some(&self.projection_matrix), false, proj_matrix.as_mut_slice());
-        gl.uniform_matrix4fv_with_f32_array(Some(&self.model_view_matrix), false, model_matrix.as_mut_slice());
+        gl.uniform_matrix4fv_with_f32_array(Some(&self.projection_matrix), false, proj.clone().as_mut_slice());
+        gl.uniform_matrix4fv_with_f32_array(Some(&self.model_view_matrix), false, model.clone().as_mut_slice());
         gl.uniform4fv_with_f32_array(Some(&self.vertex_color), &mut color.clone());
 
         gl.bind_buffer(WebGlRenderingContext::ARRAY_BUFFER, Some(&self.position_buffer));
@@ -192,9 +185,13 @@ impl SquareProgram {
     }
 }
 
+fn is_hole(x: i32, z: i32) -> bool { (x.abs() + z * 3) % (12 + z * 2) >= 10 + z }
+
+
 struct Main {
     framecount: u64,
     context: WebGlRenderingContext,
+    keys: Rc<RefCell<HashSet<String>>>,
 }
 
 
@@ -209,6 +206,29 @@ impl Main {
         canvas.set_height(700);
         canvas.style().set_property("border", "solid")?;
 
+        let keys = Rc::new(RefCell::new(HashSet::new()));
+
+        {
+            let keys = keys.clone();
+            let closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+                keys.borrow_mut().insert(event.key());
+                console::log_1(&format!("Key down: {}, Keys: {:?}", event.key(), keys.borrow()).into());
+            }) as Box<dyn FnMut(_)>);
+            document.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())?;
+            closure.forget(); // Why? But they do this in the example, better do the same.
+        }
+
+        {
+            let keys = keys.clone();
+            let closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+                keys.borrow_mut().remove(&event.key());
+                console::log_1(&format!("Key up: {}, Keys: {:?}", event.key(), keys.borrow()).into());
+            }) as Box<dyn FnMut(_)>);
+            document.add_event_listener_with_callback("keyup", closure.as_ref().unchecked_ref())?;
+            closure.forget(); // Why? But they do this in the example, better do the same.
+        }
+
+
         let context = canvas
             .get_context("webgl")?
             .unwrap()
@@ -217,6 +237,7 @@ impl Main {
         Ok(Main {
             framecount: 0,
             context: context,
+            keys: keys,
         })
     }
 
@@ -254,6 +275,100 @@ impl Main {
 }
 
 
+struct Player {
+    pos: Point3<f32>,
+    vel: Vector3<f32>,
+}
+
+impl Player {
+    fn new() -> Self { Player { pos: Point3::new(0.0, -1.0, 0.0), vel: Vector3::new(0.0, 0.0, 0.0) } }
+    fn frame(&mut self, m: &Main) {
+       let keys = m.keys.borrow();
+       let left = keys.contains("ArrowLeft");
+       let right = keys.contains("ArrowRight");
+       let up = keys.contains("ArrowUp");
+       let down = keys.contains("ArrowDown");
+       let space = keys.contains(" ");
+       let standing = self.pos.y <= -1.0 && !is_hole((self.pos.x / 2.0).round() as i32, (self.pos.z / 2.0).round() as i32);
+
+       let max_speed = 0.5;
+       let speed_incr = 0.005;
+       let speed_decr = 0.02;
+
+       let velx = self.vel.x;
+       let acc_x = match (right, left, standing) {
+           (false, true, true) if velx < 0.0 => speed_decr,
+           (false, true, _) if velx >= 0.0 && velx < max_speed => speed_incr,
+           (true, false, true) if velx <= 0.0 && velx > -max_speed => -speed_incr,
+           (true, false, _) if velx > 0.0 => -speed_decr,
+           (_, _, true) if velx > speed_decr => -speed_decr,
+           (_, _, true) if velx < -speed_decr => speed_decr,
+           (_, _, true) => -velx,
+           _ => 0.0,
+       };
+       self.vel.x += acc_x;
+
+       let acc_y = match (space, standing) {
+           (true, true) => 0.3,
+           (false, true) => { self.vel.y = 0.0; self.pos.y = -1.0; 0.0 },
+           (_, false) => -0.02,
+           // _ => -self.vel.y,
+       };
+       self.vel.y += acc_y;
+
+       let z_speed = 0.1;
+
+       self.vel.z = match (up, down) {
+           (true, false) if self.pos.z < 2.0 => z_speed,
+           (false, true) if self.pos.z > -2.0 => -z_speed,
+           _ => 0.0,
+       };
+
+       self.pos += self.vel;
+
+       if self.pos.y <= -1.0 && !is_hole((self.pos.x / 2.0).round() as i32, (self.pos.z / 2.0).round() as i32) {
+          self.pos.y = -1.0;
+       };
+    }
+}
+
+fn draw_scene(m: &Main, prog: &SquareProgram, player: &Player) {
+   m.context.enable(WebGlRenderingContext::DEPTH_TEST);
+
+   let proj = Matrix4::new_perspective(1200.0 / 700.0, 3.1416 / 2.0, 0.1, 10000.0);
+
+   let x_camera = -player.vel.x * 2.0;
+   let camera = Unit::new_normalize(Vector3::new(x_camera, 0.0, -1.0));
+   let camera = Point3::new(camera.x * 5.0 + player.pos.x, camera.y, camera.z * 5.0);
+
+   let view = Matrix4::look_at_rh(&camera, &player.pos, &Vector3::y());
+   let proj = proj * view;
+
+   let rot = Matrix4::from_axis_angle(&Unit::new_normalize(Vector3::x()), 3.1416 / 2.0);
+   let model = rot.append_translation(&Vector3::new(0.0, -2.0, 0.0));
+   let x_base = (player.pos.x as i32) / 2;
+   for x in x_base-20..x_base+20 {
+       for z in -1..2 {
+           if is_hole(x, z) { continue }
+           let tr = model.append_translation(&Vector3::new((x * 2) as f32, 0.0, (z * 2) as f32));
+           let c = if (x + z) % 2 == 0 { &[0.3, 0.3, 0.3, 1.0] } else { &[0.5, 0.5, 0.5, 1.0] };
+           prog.run(&m, c, &proj, &tr);
+       }
+   }
+
+   // Draw the player
+   let mut model: Matrix4<f32> = Matrix4::identity();
+   model.append_nonuniform_scaling_mut(&Vector3::new(0.3, 1.0, 1.0));
+   model.append_translation_mut(&Vector3::new(0.0, 0.0, 0.7));
+   for i in 0..8 {
+       let rot = Matrix4::from_axis_angle(&Unit::new_normalize(Vector3::y()), (i as f32) * 3.1416 * 2.0 / 8.0);
+       let mut tr = rot * model;
+       tr.append_translation_mut(&Vector3::new(player.pos.x, player.pos.y, player.pos.z));
+       let red = (if i >= 4 { 8 - i } else { i }) as f32 * 0.2;
+       prog.run(&m, &[0.8 + red, 0.8 - red, 0.2, 1.0], &proj, &tr);
+   }
+}
+
 // Called by our JS entry point to run the example
 #[wasm_bindgen(start)]
 pub fn main() -> Result<(), JsValue> {
@@ -261,10 +376,13 @@ pub fn main() -> Result<(), JsValue> {
     let g = f.clone();
     let mut m = Main::new()?;
     let prog = SquareProgram::new(&m)?;
-    console::log_1(&format!("{:?}", prog).into());
+    console::log_1(&format!("Created WebGL program: {:?}", prog).into());
+    let mut player = Player::new();
+
     *g.borrow_mut() = Some(Closure::wrap(Box::new(move || {
          m.frame();
-         prog.run(&m, &[0.5, 0.5, 0.5, 1.0]);
+         draw_scene(&m, &prog, &player);
+         player.frame(&m);
          request_animation_frame(f.borrow().as_ref().unwrap());
     }) as Box<FnMut()>));
     request_animation_frame(g.borrow().as_ref().unwrap());
