@@ -337,7 +337,7 @@ fn draw_scene(m: &Main, prog: &SquareProgram, player: &Player) {
 
    let proj = Matrix4::new_perspective(1200.0 / 700.0, 3.1416 / 2.0, 0.1, 10000.0);
 
-   let x_camera = -player.vel.x * 2.0;
+   let x_camera = -player.vel.x * 3.0;
    let camera = Unit::new_normalize(Vector3::new(x_camera, 0.0, -1.0));
    let camera = Point3::new(camera.x * 5.0 + player.pos.x, camera.y, camera.z * 5.0);
 
